@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NTP 对时网关</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <section id="login-view" class="login-view">
+    <form id="login-form" class="login-card">
+      <div class="brand-mark">NTP</div>
+      <h1>对时网关管理</h1>
+      <p class="muted">Linux · RS485 · P3 Specific</p>
+      <label>账号<input id="login-user" value="admin" autocomplete="username" required></label>
+      <label>密码<input id="login-password" type="password" autocomplete="current-password" required></label>
+      <button id="login-button" class="primary" type="submit">登录</button>
+      <div id="login-error" class="error-text"></div>
+    </form>
+  </section>
+
+  <div id="app-view" class="app-view" hidden>
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark small">NTP</span>
+        <div>
+          <strong>NTP 对时网关</strong>
+          <span id="header-host" class="muted"></span>
+        </div>
+      </div>
+      <div class="header-right">
+        <span id="header-time" class="clock"></span>
+        <span id="ntp-pill" class="pill">等待同步</span>
+        <button id="logout-button" class="ghost">退出</button>
+      </div>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="overview">总览</button>
+      <button class="tab" data-tab="ntp">NTP</button>
+      <button class="tab" data-tab="network">网络</button>
+      <button class="tab" data-tab="serial">RS485</button>
+      <button class="tab" data-tab="schedule">定时任务</button>
+      <button class="tab" data-tab="logs">运行日志</button>
+      <button class="tab" data-tab="system">系统</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" class="tab-panel active">
+        <div class="metrics">
+          <article class="metric"><span>系统时间</span><strong id="metric-time">--</strong></article>
+          <article class="metric"><span>时间状态</span><strong id="metric-state">--</strong></article>
+          <article class="metric"><span>NTP 偏差</span><strong id="metric-offset">--</strong></article>
+          <article class="metric"><span>上级服务器</span><strong id="metric-server">--</strong></article>
+        </div>
+        <h2>RS485 串口</h2>
+        <div id="port-overview" class="port-grid"></div>
+        <h2>网络</h2>
+        <pre id="network-info" class="console"></pre>
+      </section>
+
+      <section id="tab-ntp" class="tab-panel">
+        <div class="section-head">
+          <div><h2>NTP 客户端</h2><p class="muted">仅作为客户端同步 Linux 系统时间，不提供 NTP 服务。</p></div>
+          <button id="ntp-sync-button" class="secondary">立即同步</button>
+        </div>
+        <form id="ntp-form" class="form-grid">
+          <label class="wide">上级 NTP 服务器（每行一个，最多 10 个）
+            <textarea id="ntp-servers" rows="4"></textarea>
+          </label>
+          <label>同步周期（秒）<input id="ntp-interval" type="number" min="5" max="86400"></label>
+          <label>超时（毫秒）<input id="ntp-timeout" type="number" min="100" max="10000"></label>
+          <label>同步有效时间（秒）<input id="ntp-max-age" type="number" min="30" max="86400"></label>
+          <label>保持时间（秒）<input id="ntp-holdover" type="number" min="0" max="86400"></label>
+          <label>平滑补偿阈值（毫秒）<input id="ntp-slew-threshold" type="number" min="0.1" max="10000" step="0.1"></label>
+          <label>大步进阈值（秒）<input id="ntp-step-threshold" type="number" min="0.001" max="10" step="0.001"></label>
+          <label class="check"><input id="ntp-enabled" type="checkbox"> 启用 NTP 客户端</label>
+          <label class="check"><input id="ntp-auto-compensate" type="checkbox"> 自动补偿系统时钟偏差</label>
+          <label class="check"><input id="ntp-allow-holdover" type="checkbox"> 失联时允许保持时间</label>
+          <div class="form-actions wide"><button class="primary" type="submit">保存 NTP 配置</button></div>
+        </form>
+        <h2>同步状态</h2>
+        <pre id="ntp-status" class="console"></pre>
+      </section>
+
+      <section id="tab-network" class="tab-panel">
+        <div class="alert warn">
+          修改网卡地址会临时应用新配置，并启动 180 秒确认倒计时。未确认将自动回滚到原地址。
+          DHCP 模式可能导致当前连接暂时中断，请确保能通过新地址重新访问设备。
+        </div>
+        <div id="network-pending"></div>
+        <div id="network-forms" class="serial-list"></div>
+      </section>
+
+      <section id="tab-serial" class="tab-panel">
+        <div class="alert warn">串口列表由硬件自动识别，默认禁用。仅发送 P3 全对时报文；启用前请核对从站地址、波特率和现场接线。</div>
+        <div id="serial-forms" class="serial-list"></div>
+        <div class="form-actions"><button id="serial-save" class="primary">保存串口配置</button></div>
+      </section>
+
+      <section id="tab-schedule" class="tab-panel">
+        <h2>调度策略</h2>
+        <form id="schedule-form" class="form-grid">
+          <label>失败重试次数<input id="schedule-retry" type="number" min="0" max="10"></label>
+          <label>重试间隔（秒）<input id="schedule-retry-interval" type="number" min="0" max="300"></label>
+          <label class="check"><input id="schedule-ntp-required" type="checkbox"> 自动对时要求有效 NTP 时间</label>
+          <div class="form-actions wide"><button class="primary" type="submit">保存调度配置</button></div>
+        </form>
+      </section>
+
+      <section id="tab-logs" class="tab-panel">
+        <div class="section-head">
+          <h2>运行日志</h2>
+          <div><button id="logs-refresh" class="secondary">刷新</button><button id="logs-export" class="ghost">导出</button></div>
+        </div>
+        <pre id="log-output" class="console tall"></pre>
+      </section>
+
+      <section id="tab-system" class="tab-panel">
+        <h2>系统信息</h2>
+        <pre id="system-info" class="console"></pre>
+        <h2>修改密码</h2>
+        <form id="password-form" class="form-grid compact">
+          <label>当前密码<input id="password-old" type="password" autocomplete="current-password" required></label>
+          <label>新密码<input id="password-new" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+          <label>确认新密码<input id="password-confirm" type="password" minlength="8" maxlength="128" autocomplete="new-password" required></label>
+          <div class="form-actions wide"><button class="primary" type="submit">修改密码</button></div>
+        </form>
+        <h2>配置与维护</h2>
+        <div class="button-row">
+          <button id="config-export" class="secondary">导出配置</button>
+          <label class="file-button">导入配置<input id="config-import" type="file" accept="application/json"></label>
+          <button id="reboot-button" class="danger">重启设备</button>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="password-modal" class="modal-backdrop" hidden>
+    <form id="forced-password-form" class="modal-card">
+      <h2>首次登录必须修改密码</h2>
+      <p class="muted">初始密码保存在设备 `/home/ntp-gateway/initial-password.txt`。</p>
+      <label>当前密码<input id="forced-old" type="password" required></label>
+      <label>新密码<input id="forced-new" type="password" minlength="8" maxlength="128" required></label>
+      <label>确认新密码<input id="forced-confirm" type="password" minlength="8" maxlength="128" required></label>
+      <button class="primary" type="submit">修改并重新登录</button>
+    </form>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <script src="/app.js"></script>
+</body>
+</html>

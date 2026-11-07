@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+config.json
+hardware_profile.json
+default-password.txt
+initial-password.txt
+logs/
+.network-baseline-v1
+network-pending.json
+*.tar.gz

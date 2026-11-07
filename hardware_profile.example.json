@@ -1,0 +1,25 @@
+{
+  "name": "Example four-port RS485 gateway",
+  "serial_ports": [
+    {
+      "device": "/dev/ttyS1",
+      "name": "COM1",
+      "description": "RS485-1"
+    },
+    {
+      "device": "/dev/ttyS2",
+      "name": "COM2",
+      "description": "RS485-2"
+    },
+    {
+      "device": "/dev/ttyS3",
+      "name": "COM3",
+      "description": "RS485-3"
+    },
+    {
+      "device": "/dev/ttyS4",
+      "name": "COM4",
+      "description": "RS485-4"
+    }
+  ]
+}
