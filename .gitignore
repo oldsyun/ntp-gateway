@@ -8,3 +8,4 @@ logs/
 .network-baseline-v1
 network-pending.json
 *.tar.gz
+.oil-ui/

@@ -2,10 +2,16 @@ const state = {
   token: sessionStorage.getItem("ntp_gateway_token") || "",
   status: null,
   ntp: null,
+  ntpBaseline: "",
   network: null,
   serial: [],
+  serialBaseline: "",
   schedule: null,
   system: null,
+  systemPanel: "info",
+  logs: [],
+  logFilter: "all",
+  logQuery: "",
   mustChange: false,
   clockEpochMs: null,
   clockPerfMs: null,
@@ -104,7 +110,6 @@ function renderStatus() {
   if (!status.system || !status.time || !status.ntp || !status.network) {
     throw new Error("状态数据不完整，请刷新页面");
   }
-  $("header-host").textContent = `${status.system.hostname || ""} · ${status.system.platform || ""}`;
   const localTime = new Date(status.time.local);
   if (!Number.isNaN(localTime.getTime()) && Number.isFinite(Number(status.time.epoch))) {
     const localAsUtc = Date.UTC(
@@ -125,28 +130,41 @@ function renderStatus() {
   pill.textContent = stateText(status.ntp.state);
   pill.className = `pill ${ntpClass(status.ntp)}`;
   $("metric-state").textContent = stateText(status.ntp.state);
+  $("metric-state").className = ntpClass(status.ntp);
   $("metric-offset").textContent = status.ntp.last_sync
-    ? `${status.ntp.offset_sec.toFixed(4)} s / ${(status.ntp.delay_sec * 1000).toFixed(1)} ms`
+    ? `${status.ntp.offset_sec.toFixed(4)} s`
     : "--";
+  $("metric-offset-detail").textContent = status.ntp.last_sync
+    ? `网络延迟 ${(status.ntp.delay_sec * 1000).toFixed(1)} ms`
+    : "等待同步";
   $("metric-server").textContent = status.ntp.server || "--";
   $("port-overview").innerHTML = (status.ports || []).map((port) => {
     const cfg = port?.config || {};
     const cls = port.state === "ok" ? "ok" : (port.enabled ? "error" : "warn");
-    return `<article class="port-card">
-      <div class="port-head"><h3>${escapeHtml(port.name)}</h3><span class="dot ${cls}"></span></div>
+    return `<article class="port-card ${port.enabled ? "is-enabled" : ""}">
+      <div class="port-head">
+        <div class="port-name"><span class="dot ${cls}"></span><h3>${escapeHtml(port.name)}</h3></div>
+        <span class="port-state">${escapeHtml(stateText(port.state))}</span>
+      </div>
+      <div class="port-device">${escapeHtml(cfg.device || "--")}</div>
       <dl>
-        <dt>状态</dt><dd>${escapeHtml(stateText(port.state))}</dd>
-        <dt>模式</dt><dd>全对时（毫秒=0）</dd>
-        <dt>设备</dt><dd>${escapeHtml(cfg.device || "--")}</dd>
-        <dt>成功 / 失败</dt><dd>${port.success_count} / ${port.error_count}</dd>
-        <dt>下次执行</dt><dd>${escapeHtml(port.next_due || "--")}</dd>
+        <div><dt>模式</dt><dd>全对时（毫秒=0）</dd></div>
+        <div><dt>成功 / 失败</dt><dd>${port.success_count} / ${port.error_count}</dd></div>
+        <div><dt>下次执行</dt><dd>${escapeHtml(port.next_due || "--")}</dd></div>
       </dl>
     </article>`;
   }).join("");
-  $("network-info").textContent = (status.network.interfaces || [])
-    .filter((iface) => iface.ip)
-    .map((iface) => `${iface.name}  ${iface.ip}/${iface.prefix}`)
-    .join("\n") || "未获取到网卡地址";
+  const interfaces = (status.network.interfaces || []).filter((iface) => iface.ip);
+  $("network-info").innerHTML = interfaces.map((iface) => {
+    const state = !iface.up ? "bad" : (iface.carrier ? "ok" : "warn");
+    return `<div class="iface-item">
+    <span class="iface-state">
+      <i class="iface-dot ${state}" role="img" aria-label="${state === "ok" ? "已激活" : state === "warn" ? "无载波" : "未启用"}"></i>
+      <span class="iface-name">${escapeHtml(iface.name)}</span>
+    </span>
+    <span class="iface-address">${escapeHtml(iface.ip)}/${escapeHtml(iface.prefix)}</span>
+  </div>`;
+  }).join("") || '<div class="empty-state">未获取到网卡地址</div>';
   $("ntp-status").textContent = JSON.stringify(status.ntp, null, 2);
   renderNetworkPending(status.network.pending);
 }
@@ -176,6 +194,33 @@ async function loadNtp() {
   $("ntp-auto-compensate").checked = Boolean(data.config.auto_compensate);
   $("ntp-allow-holdover").checked = Boolean(data.config.allow_holdover);
   $("ntp-status").textContent = JSON.stringify(data.status, null, 2);
+}
+
+function collectNtpDraft() {
+  return {
+    enabled: $("ntp-enabled").checked,
+    servers: $("ntp-servers").value,
+    sync_interval_sec: $("ntp-interval").value,
+    timeout_ms: $("ntp-timeout").value,
+    max_age_sec: $("ntp-max-age").value,
+    holdover_max_sec: $("ntp-holdover").value,
+    auto_compensate: $("ntp-auto-compensate").checked,
+    slew_threshold_sec: $("ntp-slew-threshold").value,
+    step_threshold_sec: $("ntp-step-threshold").value,
+    allow_holdover: $("ntp-allow-holdover").checked,
+    retry_count: $("schedule-retry").value,
+    retry_interval_sec: $("schedule-retry-interval").value,
+    ntp_required: $("schedule-ntp-required").checked,
+  };
+}
+
+function updateNtpDirty() {
+  $("ntp-save").disabled = JSON.stringify(collectNtpDraft()) === state.ntpBaseline;
+}
+
+function setNtpBaseline() {
+  state.ntpBaseline = JSON.stringify(collectNtpDraft());
+  updateNtpDirty();
 }
 
 async function loadSchedule() {
@@ -228,15 +273,17 @@ function renderNetwork() {
     const gateway = iface.gateway || iface.persistent?.gateway || "";
     return `<article class="serial-card network-card" data-iface="${escapeHtml(iface.name)}">
       <div class="serial-head">
-        <h3>${escapeHtml(iface.name)} <span class="muted">${escapeHtml(iface.mac || "")}</span></h3>
-        <span class="pill ${iface.up ? (iface.carrier ? "ok" : "warn") : "bad"}">${iface.up ? (iface.carrier ? "UP" : "NO CARRIER") : "DOWN"}</span>
+        <div class="serial-title">
+          <h3>${escapeHtml(iface.name)} <span class="muted">${escapeHtml(iface.mac || "")}</span></h3>
+          <span class="pill ${iface.up ? (iface.carrier ? "ok" : "warn") : "bad"}">${iface.up ? (iface.carrier ? "UP" : "NO CARRIER") : "DOWN"}</span>
+          <span class="network-current">当前地址 <b>${escapeHtml(ip || "--")}</b></span>
+        </div>
       </div>
-      <div class="serial-grid">
+      <div class="serial-grid network-fields">
         <label>配置方式<select data-network-field="method">
           <option value="static" ${method === "static" ? "selected" : ""}>静态 IP</option>
           <option value="dhcp" ${method === "dhcp" ? "selected" : ""}>DHCP</option>
         </select></label>
-        <label>当前地址<input value="${escapeHtml(ip)}" disabled></label>
         <label>IP 地址<input data-network-field="ip" data-static-field value="${escapeHtml(ip)}" placeholder="192.168.50.138"></label>
         <label>子网掩码<input data-network-field="netmask" data-static-field value="${escapeHtml(netmask)}" placeholder="255.255.255.0"></label>
         <label>默认网关<input data-network-field="gateway" data-static-field value="${escapeHtml(gateway)}" placeholder="192.168.50.1"></label>
@@ -245,11 +292,20 @@ function renderNetwork() {
         <textarea data-network-field="dns" rows="2">${escapeHtml(dns)}</textarea>
       </label>
       <div class="serial-foot">
-        <button class="primary" data-network-action="stage">应用 ${escapeHtml(iface.name)} 配置</button>
+        <button class="primary" data-network-action="stage" disabled>应用配置</button>
       </div>
     </article>`;
   }).join("");
   toggleNetworkFields();
+  document.querySelectorAll(".network-card").forEach((card) => {
+    card.dataset.baseline = JSON.stringify(collectNetwork(card));
+    updateNetworkDirty(card);
+  });
+}
+
+function updateNetworkDirty(card) {
+  const button = card.querySelector('[data-network-action="stage"]');
+  button.disabled = JSON.stringify(collectNetwork(card)) === card.dataset.baseline;
 }
 
 function toggleNetworkFields() {
@@ -293,16 +349,24 @@ const intervalPresets = [
 
 function renderSerial(ports) {
   state.serial = ports;
+  const enabledCount = ports.filter((port) => port.config?.enabled).length;
+  $("serial-summary").textContent = `${ports.length} 个通道 · ${enabledCount} 个启用`;
   $("serial-forms").innerHTML = ports.map((port) => {
     const cfg = port.config;
     if (!cfg) throw new Error("串口配置数据不完整，请刷新 RS485 页面");
     const mode = cfg.schedule_mode || "interval";
     const presetMatched = intervalPresets.some(([value]) => Number(value) === Number(cfg.interval_sec));
-    return `<article class="serial-card" data-port="${port.id}">
+    const statusClass = !cfg.enabled ? "neutral" : (port.state === "ok" ? "ok" : "bad");
+    return `<article class="serial-card ${cfg.enabled ? "is-enabled" : "is-disabled"}" data-port="${port.id}">
       <div class="serial-head">
         <div class="serial-title">
           <h3>${escapeHtml(cfg.name)} <span class="muted">${escapeHtml(cfg.device)}</span></h3>
-          <span class="pill ${port.state === "ok" ? "ok" : "bad"}">${escapeHtml(stateText(port.state))}</span>
+          <span class="pill ${statusClass}">${escapeHtml(stateText(port.state))}</span>
+        </div>
+        <div class="serial-readout">
+          <span><small>成功</small><b>${port.success_count}</b></span>
+          <span><small>失败</small><b>${port.error_count}</b></span>
+          <span><small>下次执行</small><b>${escapeHtml(port.next_due || "--")}</b></span>
         </div>
         <label class="check serial-enable"><input data-field="enabled" type="checkbox" ${cfg.enabled ? "checked" : ""}> 启用</label>
       </div>
@@ -349,12 +413,25 @@ function renderSerial(ports) {
     </article>`;
   }).join("");
   toggleSerialScheduleFields();
+  state.serialBaseline = JSON.stringify(collectSerial());
+  updateSerialDirty();
+}
+
+function updateSerialDirty() {
+  if (!state.serial.length) return;
+  const dirty = JSON.stringify(collectSerial()) !== state.serialBaseline;
+  document.querySelectorAll("[data-serial-save]").forEach((button) => {
+    button.disabled = !dirty;
+  });
 }
 
 function toggleSerialScheduleFields() {
-  document.querySelectorAll(".serial-card").forEach((card) => {
-    const mode = card.querySelector('[data-field="schedule_mode"]').value;
-    const preset = card.querySelector("[data-interval-preset]").value;
+  document.querySelectorAll("#serial-forms .serial-card[data-port]").forEach((card) => {
+    const modeField = card.querySelector('[data-field="schedule_mode"]');
+    const presetField = card.querySelector("[data-interval-preset]");
+    if (!modeField || !presetField) return;
+    const mode = modeField.value;
+    const preset = presetField.value;
     card.querySelectorAll("[data-schedule-interval]").forEach((field) => {
       field.hidden = mode !== "interval";
     });
@@ -368,17 +445,11 @@ function toggleSerialScheduleFields() {
 }
 
 async function loadSerial() {
-  const button = $("serial-save");
-  button.disabled = true;
-  try {
-    renderSerial(await api("/api/v1/serial"));
-  } finally {
-    button.disabled = false;
-  }
+  renderSerial(await api("/api/v1/serial"));
 }
 
 function collectSerial() {
-  return [...document.querySelectorAll(".serial-card")].map((card) => {
+  return [...document.querySelectorAll("#serial-forms .serial-card[data-port]")].map((card) => {
     const id = Number(card.dataset.port);
     const entry = state.serial.find((item) => item.id === id);
     if (!entry || !entry.config) {
@@ -397,28 +468,119 @@ function collectSerial() {
   });
 }
 
+function parseLogLines(raw) {
+  return String(raw || "").split(/\r?\n/).filter(Boolean).map((line) => {
+    const match = line.match(/^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\s+(\S+)\s+(.*)$/);
+    if (!match) return { timestamp: "", level: "", className: "raw", severity: "info", message: line };
+    const [, timestamp, level, message] = match;
+    const name = level.toLowerCase();
+    const severity = /^(error|critical|fatal)$/.test(name) ? "error"
+      : /^(warn|warning)$/.test(name) ? "warn" : "info";
+    return {
+      timestamp,
+      level,
+      className: name.replace(/[^a-z]/g, ""),
+      severity,
+      message,
+    };
+  });
+}
+
+function renderLogs() {
+  const entries = state.logs || [];
+  const query = state.logQuery.trim().toLowerCase();
+  const visible = entries.filter((entry) => {
+    if (state.logFilter === "warn" && entry.severity !== "warn") return false;
+    if (state.logFilter === "error" && entry.severity !== "error") return false;
+    return !query || entry.message.toLowerCase().includes(query) || entry.level.toLowerCase().includes(query);
+  });
+  const counts = entries.reduce((acc, entry) => {
+    if (entry.severity === "warn") acc.warn += 1;
+    if (entry.severity === "error") acc.error += 1;
+    return acc;
+  }, { warn: 0, error: 0 });
+  document.querySelectorAll("[data-log-count]").forEach((el) => {
+    el.textContent = String(counts[el.dataset.logCount] || 0);
+  });
+  const total = entries.filter((entry) => entry.className !== "raw").length;
+  $("log-count").textContent = `${visible.length} / ${total} 行`;
+  $("log-output").innerHTML = visible.map((entry) => {
+    if (entry.className === "raw") {
+      return `<div class="log-row raw"><span class="log-message">${escapeHtml(entry.message)}</span></div>`;
+    }
+    return `<div class="log-row sev-${entry.severity}">
+      <time class="log-time">${escapeHtml(entry.timestamp)}</time>
+      <span class="log-level ${escapeHtml(entry.className)}">${escapeHtml(entry.level)}</span>
+      <span class="log-message">${escapeHtml(entry.message)}</span>
+    </div>`;
+  }).join("") || '<div class="log-row raw"><span class="log-message">没有匹配的日志</span></div>';
+}
+
 async function loadLogs() {
   const data = await api("/api/v1/logs?lines=220");
-  $("log-output").textContent = data.lines;
-  $("log-output").scrollTop = $("log-output").scrollHeight;
+  state.logs = parseLogLines(data.lines);
+  renderLogs();
+  if (state.logFilter === "all" && !state.logQuery) {
+    $("log-output").scrollTop = $("log-output").scrollHeight;
+  }
 }
 
 async function loadSystem() {
   state.system = await api("/api/v1/system/info");
-  $("system-info").textContent = JSON.stringify(state.system, null, 2);
+  const info = state.system || {};
+  const duration = (seconds) => {
+    const total = Math.max(0, Number(seconds) || 0);
+    const days = Math.floor(total / 86400);
+    const hours = Math.floor((total % 86400) / 3600);
+    const minutes = Math.floor((total % 3600) / 60);
+    return `${days} 天 ${hours} 小时 ${minutes} 分`;
+  };
+  const rows = [
+    { key: "version", label: "应用版本", value: info.app_version },
+    { key: "hostname", label: "主机名", value: info.hostname },
+    { key: "platform", label: "系统平台", value: info.platform },
+    { key: "machine", label: "硬件架构", value: info.machine },
+    { key: "python", label: "Python 版本", value: info.python },
+    { key: "http", label: "HTTP 端口", value: info.http_port },
+    { key: "pid", label: "进程 PID", value: info.pid },
+    { key: "uid", label: "运行用户 UID", value: info.uid },
+    { key: "uptime", label: "系统运行时长", value: duration(info.uptime_sec) },
+    { key: "service", label: "服务运行时长", value: duration(info.service_uptime_sec) },
+    { key: "password", label: "初始密码文件", value: info.initial_password_file },
+  ];
+  $("system-info").innerHTML = `<div class="system-grid">${rows.map((row) => `
+    <div class="system-item system-${row.key}">
+      <span>${escapeHtml(row.label)}</span>
+      <strong>${escapeHtml(row.value ?? "--")}</strong>
+    </div>`).join("")}</div>`;
 }
 
 async function activateTab(name) {
   document.querySelectorAll(".tab").forEach((tab) => tab.classList.toggle("active", tab.dataset.tab === name));
   document.querySelectorAll(".tab-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `tab-${name}`));
   try {
-    if (name === "ntp") await loadNtp();
+    if (name === "ntp") { await loadNtp(); await loadSchedule(); setNtpBaseline(); }
     if (name === "network") await loadNetwork();
     if (name === "serial") await loadSerial();
-    if (name === "schedule") await loadSchedule();
-    if (name === "logs") await loadLogs();
-    if (name === "system") await loadSystem();
+    if (name === "system") { await loadSystem(); await activateSystemPanel(state.systemPanel); }
     if (name === "overview") await refreshStatus();
+  } catch (error) { toast(error.message, true); }
+}
+
+async function activateSystemPanel(name) {
+  state.systemPanel = name;
+  document.querySelectorAll("[data-system-panel]").forEach((button) => {
+    const active = button.dataset.systemPanel === name;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".system-panel").forEach((panel) => {
+    const active = panel.id === `system-panel-${name}`;
+    panel.classList.toggle("active", active);
+    panel.hidden = !active;
+  });
+  try {
+    if (name === "logs" && !state.logs.length) await loadLogs();
   } catch (error) { toast(error.message, true); }
 }
 
@@ -446,9 +608,14 @@ $("login-form").addEventListener("submit", async (event) => {
 
 $("logout-button").addEventListener("click", () => logout(true));
 document.querySelectorAll(".tab").forEach((tab) => tab.addEventListener("click", () => activateTab(tab.dataset.tab)));
+document.querySelectorAll("[data-system-panel]").forEach((button) => {
+  button.addEventListener("click", () => activateSystemPanel(button.dataset.systemPanel));
+});
 
 $("ntp-form").addEventListener("submit", async (event) => {
   event.preventDefault();
+  const button = $("ntp-save");
+  button.disabled = true;
   try {
     const servers = $("ntp-servers").value.split(/\r?\n/).map((v) => v.trim()).filter(Boolean);
     await api("/api/v1/ntp", { method: "POST", body: {
@@ -463,10 +630,23 @@ $("ntp-form").addEventListener("submit", async (event) => {
       step_threshold_sec: Number($("ntp-step-threshold").value),
       allow_holdover: $("ntp-allow-holdover").checked,
     }});
-    toast("NTP 配置已保存");
+    await api("/api/v1/schedule", { method: "POST", body: {
+      retry_count: Number($("schedule-retry").value),
+      retry_interval_sec: Number($("schedule-retry-interval").value),
+      ntp_required: $("schedule-ntp-required").checked,
+    }});
+    toast("NTP 配置与调度策略已保存");
     await loadNtp();
-  } catch (error) { toast(error.message, true); }
+    await loadSchedule();
+    setNtpBaseline();
+  } catch (error) {
+    toast(error.message, true);
+    updateNtpDirty();
+  }
 });
+
+$("ntp-form").addEventListener("input", () => updateNtpDirty());
+$("ntp-form").addEventListener("change", () => updateNtpDirty());
 
 $("ntp-sync-button").addEventListener("click", async () => {
   try {
@@ -477,8 +657,15 @@ $("ntp-sync-button").addEventListener("click", async () => {
   } catch (error) { toast(error.message, true); }
 });
 
+$("network-forms").addEventListener("input", (event) => {
+  const card = event.target.closest(".network-card");
+  if (card) updateNetworkDirty(card);
+});
+
 $("network-forms").addEventListener("change", (event) => {
   if (event.target.matches('[data-network-field="method"]')) toggleNetworkFields();
+  const card = event.target.closest(".network-card");
+  if (card) updateNetworkDirty(card);
 });
 
 $("network-forms").addEventListener("click", async (event) => {
@@ -499,7 +686,7 @@ $("network-forms").addEventListener("click", async (event) => {
   } catch (error) {
     toast(error.message, true);
   } finally {
-    button.disabled = false;
+    updateNetworkDirty(card);
   }
 });
 
@@ -523,12 +710,18 @@ $("network-pending").addEventListener("click", async (event) => {
   }
 });
 
-$("serial-save").addEventListener("click", async () => {
-  try {
-    await api("/api/v1/serial", { method: "POST", body: { ports: collectSerial() } });
-    toast("串口配置已保存");
-    await loadSerial();
-  } catch (error) { toast(error.message, true); }
+document.querySelectorAll("[data-serial-save]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    button.disabled = true;
+    try {
+      await api("/api/v1/serial", { method: "POST", body: { ports: collectSerial() } });
+      toast("串口配置已保存");
+      await loadSerial();
+    } catch (error) {
+      toast(error.message, true);
+      updateSerialDirty();
+    }
+  });
 });
 
 $("serial-forms").addEventListener("click", async (event) => {
@@ -560,20 +753,25 @@ $("serial-forms").addEventListener("change", (event) => {
   if (event.target.matches("[data-interval-preset]")) {
     toggleSerialScheduleFields();
   }
+  updateSerialDirty();
 });
 
-$("schedule-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  try {
-    await api("/api/v1/schedule", { method: "POST", body: {
-      retry_count: Number($("schedule-retry").value),
-      retry_interval_sec: Number($("schedule-retry-interval").value),
-      ntp_required: $("schedule-ntp-required").checked,
-    }});
-    toast("调度配置已保存");
-  } catch (error) { toast(error.message, true); }
-});
+$("serial-forms").addEventListener("input", () => updateSerialDirty());
 
+document.querySelectorAll("[data-log-level]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.logFilter = button.dataset.logLevel;
+    document.querySelectorAll("[data-log-level]").forEach((item) => {
+      item.classList.toggle("active", item === button);
+      item.setAttribute("aria-pressed", item === button ? "true" : "false");
+    });
+    renderLogs();
+  });
+});
+$("log-search").addEventListener("input", (event) => {
+  state.logQuery = event.target.value;
+  renderLogs();
+});
 $("logs-refresh").addEventListener("click", () => loadLogs().catch((error) => toast(error.message, true)));
 $("logs-export").addEventListener("click", async () => {
   try {
